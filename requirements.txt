@@ -1,0 +1,4 @@
+Flask
+Flask-Caching
+requests
+gunicorn
