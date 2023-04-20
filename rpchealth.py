@@ -1,11 +1,10 @@
-import asyncio
 import aiohttp
 from aiohttp import web
 import json
 import os
 import asyncio
 import logging
-import time
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,6 +16,7 @@ health_status_lock = asyncio.Lock()
 
 backend_servers = set()
 health_check_task = None  # Task for the periodic health check
+
 
 async def get_rpc_address(rpc_ip, rpc_port):
     if rpc_ip and rpc_port:
@@ -33,6 +33,7 @@ async def get_rpc_address(rpc_ip, rpc_port):
     else:
         return None
 
+
 async def check_rpc_health(rpc_address, key, server_data):
     async with aiohttp.ClientSession() as session:
         try:
@@ -41,7 +42,10 @@ async def check_rpc_health(rpc_address, key, server_data):
                     health_data = await response.json()
 
                     if health_data.get("status") == "Healthy":
-                        async with session.post(rpc_address, json={"jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1}) as block_response:
+                        async with session.post(rpc_address,
+                                                json={"jsonrpc": "2.0",
+                                                      "method": "eth_blockNumber",
+                                                      "params": [], "id": 1}) as block_response:
                             block_data = await block_response.json()
                             block_number_hex = block_data["result"]
                             block_number = int(block_number_hex, 16)
@@ -57,16 +61,17 @@ async def check_rpc_health(rpc_address, key, server_data):
             return 503, None
 
 
-
 async def save_server_data(server_data):
     with open(SERVER_DATA_FILE, 'w') as outfile:
         json.dump(server_data, outfile)
+
 
 async def load_server_data():
     if os.path.isfile(SERVER_DATA_FILE):
         with open(SERVER_DATA_FILE, 'r') as infile:
             return json.load(infile)
-    return {"health_status": {}, "servers": {}, "last_block": {}}
+    return {"health_status": {}, "servers": {}, "last_block": {}, "stale_count": {}}
+
 
 async def update_health_status():
     global health_check_task
@@ -75,11 +80,21 @@ async def update_health_status():
         for key in server_data['servers']:
             rpc_address = server_data['servers'][key]
             health_status, block_number = await check_rpc_health(rpc_address, key, server_data)
-            server_data['health_status'][key] = health_status
 
-            # Check if block_number is not None and if it's greater than the last_block
-            #if block_number is not None and (key not in server_data['last_block'] or block_number > server_data['last_block'][key]):
-            server_data['last_block'][key] = block_number
+            if block_number is not None:
+                if key not in server_data['stale_count']:
+                    server_data['stale_count'][key] = 0
+
+                if key not in server_data['last_block'] or block_number > server_data['last_block'][key]:
+                    server_data['last_block'][key] = block_number
+                    server_data['stale_count'][key] = 0
+                else:
+                    server_data['stale_count'][key] += 1
+
+                if server_data['stale_count'][key] >= 3:
+                    health_status = 503
+
+            server_data['health_status'][key] = health_status
 
         await save_server_data(server_data)
         await asyncio.sleep(HEALTH_CHECK_INTERVAL)
@@ -107,6 +122,7 @@ async def health_check(request):
         return web.Response(text="UP")
     else:
         return web.Response(text="DOWN")
+
 
 async def main():
     app = web.Application()
