@@ -46,14 +46,19 @@ async def check_rpc_health(rpc_address, key, server_data):
                             block_number_hex = block_data["result"]
                             block_number = int(block_number_hex, 16)
 
-                            # Return 200 and the block number
-                            return 200, block_number
+                            last_block = server_data["last_block"].get(key, 0)
+                            stale_block_count = server_data["stale_block_count"].get(key, 0)
 
-            # Return 503 and None if the status is not healthy
-            return 503, None
-
+                            if block_number > last_block:
+                                server_data["stale_block_count"][key] = 0
+                                return 200, block_number
+                            else:
+                                if stale_block_count < 5:
+                                    server_data["stale_block_count"][key] = stale_block_count + 1
+                                    return 200, block_number
+                                else:
+                                    return 503, block_number
         except aiohttp.ClientError as e:
-            # Return 503 and None in case of an exception
             return 503, None
 
 
@@ -66,7 +71,7 @@ async def load_server_data():
     if os.path.isfile(SERVER_DATA_FILE):
         with open(SERVER_DATA_FILE, 'r') as infile:
             return json.load(infile)
-    return {"health_status": {}, "servers": {}, "last_block": {}}
+    return {"health_status": {}, "servers": {}, "last_block": {}, "stale_block_count": {}}
 
 async def update_health_status():
     global health_check_task
