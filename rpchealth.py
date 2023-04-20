@@ -1,119 +1,125 @@
-import logging
-from flask import Flask, request
-from flask_caching import Cache
-from requests.exceptions import SSLError
-import requests
+import asyncio
+import aiohttp
+from aiohttp import web
 import json
-import threading
+import os
+import asyncio
+import logging
 import time
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
-cache = Cache(app, config={'CACHE_TYPE': 'simple'})
-last_block = None
-last_block_per_server = {}
-health_status = {}
-health_status_per_server = {}
-last_request_time_per_server = {}
-consecutive_503_per_server = {}
+routes = web.RouteTableDef()
+SERVER_DATA_FILE = "server_data.json"
+HEALTH_CHECK_INTERVAL = 60
+health_status_lock = asyncio.Lock()
 
+backend_servers = set()
+health_check_task = None  # Task for the periodic health check
 
-def health_check_thread():
-    while True:
-        for key, _ in list(health_status_per_server.items()):
-            rpc_ip, rpc_port = key.split(":")
+async def get_rpc_address(rpc_ip, rpc_port):
+    if rpc_ip and rpc_port:
+        protocol = "http"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"https://{rpc_ip}:{rpc_port}", timeout=3) as response:
+                    if response.status == 200:
+                        protocol = "https"
+        except (aiohttp.ClientError, ValueError):
+            pass
 
-            health_status = check_rpc_health(rpc_ip, rpc_port)
-            if health_status == 503:
-                consecutive_503_per_server[key] = consecutive_503_per_server.get(key, 0) + 1
-                if consecutive_503_per_server[key] >= 6:
-                    health_status_per_server[key] = 503
-                else:
-                    health_status_per_server[key] = 200
-            else:
-                consecutive_503_per_server[key] = 0
-                health_status_per_server[key] = health_status
-
-        time.sleep(30)  # Perform health checks every 30 seconds
-
-
-# Start the health check thread
-threading.Thread(target=health_check_thread, daemon=True).start()
-
-
-@app.route('/health', methods=['GET'])
-@cache.cached(timeout=30, key_prefix='health_check')
-def health_check():
-    rpc_ip = request.headers.get('X-Backend-Server', '127.0.0.1')
-    rpc_port = request.headers.get('X-Backend-Port', '8545')
-    key = f"{rpc_ip}:{rpc_port}"
-
-    if key not in health_status_per_server:
-        health_status_per_server[key] = check_rpc_health(rpc_ip, rpc_port)
-
-    # Update the last request time for the backend server
-    last_request_time_per_server[key] = time.time()
-
-    if health_status_per_server[key] == 200:
-        return "UP"
+        return f"{protocol}://{rpc_ip}:{rpc_port}"
     else:
-        return "DOWN"
+        return None
 
-def get_header(headers, key, default=None):
-    return next((value for header, value in headers if header.lower() == key.lower()), default)
+async def check_rpc_health(rpc_address, key, server_data):
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(f"{rpc_address}/health") as response:
+                if response.status == 200:
+                    health_data = await response.json()
+
+                    if health_data.get("status") == "Healthy":
+                        async with session.post(rpc_address, json={"jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1}) as block_response:
+                            block_data = await block_response.json()
+                            block_number_hex = block_data["result"]
+                            block_number = int(block_number_hex, 16)
+
+                            # Return 200 and the block number
+                            return 200, block_number
+
+            # Return 503 and None if the status is not healthy
+            return 503, None
+
+        except aiohttp.ClientError as e:
+            # Return 503 and None in case of an exception
+            return 503, None
 
 
-def update_health_status(rpc_ip, rpc_port):
-    global health_status
+
+async def save_server_data(server_data):
+    with open(SERVER_DATA_FILE, 'w') as outfile:
+        json.dump(server_data, outfile)
+
+async def load_server_data():
+    if os.path.isfile(SERVER_DATA_FILE):
+        with open(SERVER_DATA_FILE, 'r') as infile:
+            return json.load(infile)
+    return {"health_status": {}, "servers": {}, "last_block": {}}
+
+async def update_health_status():
+    global health_check_task
+    while True:
+        server_data = await load_server_data()
+        for key in server_data['servers']:
+            rpc_address = server_data['servers'][key]
+            health_status, block_number = await check_rpc_health(rpc_address, key, server_data)
+            server_data['health_status'][key] = health_status
+
+            # Check if block_number is not None and if it's greater than the last_block
+            #if block_number is not None and (key not in server_data['last_block'] or block_number > server_data['last_block'][key]):
+            server_data['last_block'][key] = block_number
+
+        await save_server_data(server_data)
+        await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+
+
+@routes.get('/health')
+async def health_check(request):
+    global health_check_task
+    rpc_ip = request.headers.get("X-Backend-Server", "127.0.0.1")
+    rpc_port = request.headers.get("X-Backend-Port", "8545")
     key = f"{rpc_ip}:{rpc_port}"
-    health_status[key] = check_rpc_health(rpc_ip, rpc_port)
 
+    server_data = await load_server_data()
 
-def check_rpc_health(rpc_ip, rpc_port):
-    global last_block_per_server
+    if key not in server_data["health_status"]:
+        server_data["health_status"][key] = 503
+        rpc_address = await get_rpc_address(rpc_ip, rpc_port)
+        server_data["servers"][key] = rpc_address
+        await save_server_data(server_data)
 
-    key = f"{rpc_ip}:{rpc_port}"
-    last_block = last_block_per_server.get(key)
+    if health_check_task is None:
+        health_check_task = asyncio.create_task(update_health_status())
 
-    res = 0
-    try:
-        if rpc_ip.startswith('http://') or rpc_ip.startswith('https://'):
-            rpc_address = rpc_ip + ":" + rpc_port
-            requests.get(rpc_address)
-        else:
-            rpc_address = "https://" + rpc_ip + ":" + rpc_port
-            try:
-                requests.get(rpc_address)
-            except SSLError:
-                logger.debug(f"SSLError occurred for {rpc_ip}:{rpc_port}, switching to HTTP")
-                rpc_address = "http://" + rpc_ip + ":" + rpc_port
-            requests.get(rpc_address)
+    if server_data["health_status"][key] == 200:
+        return web.Response(text="UP")
+    else:
+        return web.Response(text="DOWN")
 
-        health_response = requests.get(f"{rpc_address}/health")
-        health_data = health_response.json()
+async def main():
+    app = web.Application()
+    app.add_routes(routes)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 9999)
+    await site.start()
+    print("Server started on http://0.0.0.0:9999")
 
-        if health_data.get('status') == "Healthy":
-            block_number_hex = json.loads(requests.post(rpc_address,
-                                           json={'jsonrpc':'2.0','method':'eth_blockNumber','params':[],'id':1})
-                                           .text)['result']
-            block_number = int(block_number_hex, 16)
+    # Keep the server running until interrupted
+    while True:
+        await asyncio.sleep(1)
 
-            if (last_block is not None) and (block_number > last_block):
-                res = 200
-            else:
-                res = 503
-            last_block_per_server[key] = block_number
-        else:
-            res = 503
-
-    except Exception as e:
-        res = 503
-        logger.error(f"Error in check_rpc_health: {e}")
-
-    logger.debug(f"Health status for {rpc_ip}:{rpc_port} is {res}")
-    return res
-
-if __name__ == "__rpchealth__":
-    app.run(host='0.0.0.0', port=9999)
+if __name__ == '__main__':
+    asyncio.run(main())

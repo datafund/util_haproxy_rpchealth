@@ -8,4 +8,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY rpchealth.py .
 
-CMD ["gunicorn", "-w", "1", "rpchealth:app", "-b", "0.0.0.0:9999"]
+CMD ["python3", "rpchealth.py"]

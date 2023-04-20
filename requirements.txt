@@ -1,4 +1,2 @@
-Flask
-Flask-Caching
-requests
-gunicorn
+aiohttp
+asyncio
