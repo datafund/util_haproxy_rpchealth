@@ -12,14 +12,20 @@ To install the required dependencies, run:
 ### Using Docker
 
 You can also use the pre-built Docker image `darkobas/rpchealth`. To start the health checker server using Docker, run:
-
+<details>
+  <summary>Copy Docker command</summary>
+  <code>docker run -p 9999:9999 darkobas/rpchealth</code>
+</details>
 
 This will start the server on `http://0.0.0.0:9999`.
 
 ### Using Helm
 
 Helm charts are also available in the `helm` directory of this repository. To use the Helm charts, run:
-
+<details>
+  <summary>Copy Helm command</summary>
+  <code>helm install rpchealth ./helm/rpchealth</code>
+</details>
 
 This will install the `rpchealth` chart with the name `rpchealth`.
 
