@@ -16,10 +16,16 @@ You can also use the pre-built Docker image `darkobas/rpchealth`. To start the h
 
 This will start the server on `http://0.0.0.0:9999`.
 
+### Using Helm
+
+Helm charts are also available in the `helm` directory of this repository. To use the Helm charts, run:
+
+
+This will install the `rpchealth` chart with the name `rpchealth`.
+
 ## Usage
 
 To start the health checker server, run:
-
 
 
 This will start the server on `http://0.0.0.0:9999`.
@@ -52,3 +58,4 @@ The configuration options for the health checker are set through the following c
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more information.
+
