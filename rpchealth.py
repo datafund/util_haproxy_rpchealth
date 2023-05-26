@@ -79,7 +79,11 @@ async def update_health_status():
         server_data = await load_server_data()
         for key in server_data['servers']:
             rpc_address = server_data['servers'][key]
+            old_status = server_data['health_status'].get(key, 503)
             health_status, block_number = await check_rpc_health(rpc_address, key, server_data)
+
+            if health_status != old_status:
+                logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status}")
 
             if block_number is not None:
                 if key not in server_data['stale_count']:
@@ -127,7 +131,7 @@ async def health_check(request):
 async def main():
     app = web.Application()
     app.add_routes(routes)
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 9999)
     await site.start()
