@@ -42,6 +42,12 @@ async def check_rpc_health(rpc_address, key, server_data):
                     health_data = await response.json()
 
                     if health_data.get("status") == "Healthy":
+                        node_health = health_data.get("entries", {}).get("node-health", {})
+                        is_syncing = node_health.get("data", {}).get("IsSyncing", False)
+
+                        if is_syncing:
+                            return 503, None
+
                         try:
                             async with session.post(
                                 rpc_address,
@@ -61,7 +67,7 @@ async def check_rpc_health(rpc_address, key, server_data):
                             logger.error(f"Error occurred while retrieving block number from {rpc_address}: {e}")
                             return 503, None
 
-            # Return 503 and None if the status is not healthy
+            # Return 503 and None if the status is not healthy or if syncing
             return 503, None
 
         except aiohttp.ClientError as e:
