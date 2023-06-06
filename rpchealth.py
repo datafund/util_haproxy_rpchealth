@@ -100,6 +100,11 @@ async def update_health_status():
 
             server_data['health_status'][key] = health_status
 
+            # Update server data if the status changes to "UP"
+            if health_status == 200 and old_status != 200:
+                server_data['stale_count'][key] = 0
+                server_data['last_block'][key] = block_number
+
         await save_server_data(server_data)
         await asyncio.sleep(HEALTH_CHECK_INTERVAL)
 
