@@ -42,22 +42,30 @@ async def check_rpc_health(rpc_address, key, server_data):
                     health_data = await response.json()
 
                     if health_data.get("status") == "Healthy":
-                        async with session.post(rpc_address,
-                                                json={"jsonrpc": "2.0",
-                                                      "method": "eth_blockNumber",
-                                                      "params": [], "id": 1}) as block_response:
-                            block_data = await block_response.json()
-                            block_number_hex = block_data["result"]
-                            block_number = int(block_number_hex, 16)
+                        try:
+                            async with session.post(
+                                rpc_address,
+                                json={"jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1},
+                            ) as block_response:
+                                block_data = await block_response.json()
+                                block_number_hex = block_data["result"]
+                                block_number = int(block_number_hex, 16)
 
-                            # Return 200 and the block number
-                            return 200, block_number
+                                if key in server_data['last_block'] and block_number <= server_data['last_block'][key]:
+                                    return 503, None
+
+                                # Return 200 and the block number
+                                return 200, block_number
+
+                        except aiohttp.ClientError as e:
+                            logger.error(f"Error occurred while retrieving block number from {rpc_address}: {e}")
+                            return 503, None
 
             # Return 503 and None if the status is not healthy
             return 503, None
 
         except aiohttp.ClientError as e:
-            # Return 503 and None in case of an exception
+            logger.error(f"Error occurred while checking health status of {rpc_address}: {e}")
             return 503, None
 
 
