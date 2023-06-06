@@ -89,7 +89,9 @@ async def update_health_status():
                 if key not in server_data['stale_count']:
                     server_data['stale_count'][key] = 0
 
-                if key not in server_data['last_block'] or block_number > server_data['last_block'][key]:
+                if key not in server_data['last_block']:
+                    server_data['last_block'][key] = block_number
+                elif block_number > server_data['last_block'][key]:
                     server_data['last_block'][key] = block_number
                     server_data['stale_count'][key] = 0
                 else:
