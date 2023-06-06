@@ -103,7 +103,7 @@ async def update_health_status():
             # Log the status change from "UP" to "DOWN" with reason
             if health_status == 503 and old_status == 200:
                 reason = "Stale Block" if server_data['stale_count'][key] >= 3 else "Unhealthy Status"
-                logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status} ({reason})"
+                logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status} ({reason})")
 
             # Update server data if the status changes to "UP"
             if health_status == 200 and old_status != 200:
