@@ -1,10 +1,10 @@
-import aiohttp
-from aiohttp import web
+import logging
 import json
 import os
 import asyncio
-import logging
-
+import aiohttp
+from aiohttp import web
+import requests
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -97,21 +97,22 @@ async def update_health_status():
             health_status, block_number = await check_rpc_health(rpc_address, key, server_data)
 
             if health_status != old_status:
-                logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status}")
+                message = f"Health status for {rpc_address} changed from {old_status} to {health_status}"
+                logger.info(message)
+                await send_telegram_notification(message)
 
             if block_number is not None:
                 if key not in server_data['stale_count']:
                     server_data['stale_count'][key] = 0
 
-                if key not in server_data['last_block']:
-                    server_data['last_block'][key] = block_number
-                elif block_number > server_data['last_block'][key]:
+                # Check if block number is greater than the last recorded block number
+                if key not in server_data['last_block'] or block_number > server_data['last_block'][key]:
                     server_data['last_block'][key] = block_number
                     server_data['stale_count'][key] = 0
                 else:
                     server_data['stale_count'][key] += 1
 
-                if server_data['stale_count'][key] >= 3:
+                if server_data['stale_count'][key] >= 2:
                     health_status = 503
 
             # Handle scenarios where block number is 0 or None
@@ -128,13 +129,39 @@ async def update_health_status():
             # Log the status change from "DOWN" to "UP"
             if health_status == 200 and old_status != 200:
                 logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status}")
-
                 server_data['stale_count'][key] = 0
-                server_data['last_block'][key] = block_number
+
+        # Check if any backend falls behind in last_block
+        max_block = max(server_data['last_block'].values())
+        min_block = min(server_data['last_block'].values())
+        if max_block - min_block > 10:
+            # Send a Telegram alert if any backend falls behind
+            message = "RPC Backend Alert:\n"
+            for k, v in server_data['last_block'].items():
+                if max_block - v > 10:
+                    message += f"Backend {k} is behind in last_block.\n"
+            await send_telegram_notification(message)
 
         await save_server_data(server_data)
         await asyncio.sleep(HEALTH_CHECK_INTERVAL)
 
+
+async def send_telegram_notification(message):
+    telegram_api_key = os.getenv("TELEGRAM_API_KEY")  # Load the Telegram API key from environment variable
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")  # Load the Telegram chat ID from environment variable
+
+    url = f"https://api.telegram.org/bot{telegram_api_key}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload) as response:
+            if response.status == 200:
+                logger.info("Telegram notification sent successfully")
+            else:
+                logger.error("Failed to send Telegram notification")
 
 @routes.get('/health')
 async def health_check(request):
@@ -167,11 +194,13 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 9999)
     await site.start()
-    print("Server started on http://0.0.0.0:9999")
+    logger.info("Server started on http://0.0.0.0:9999")
 
     # Keep the server running until interrupted
     while True:
         await asyncio.sleep(1)
 
+
 if __name__ == '__main__':
     asyncio.run(main())
+

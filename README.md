@@ -64,4 +64,3 @@ The configuration options for the health checker are set through the following c
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more information.
-
