@@ -134,7 +134,7 @@ async def update_health_status():
         # Check if any backend falls behind in last_block
         max_block = max(server_data['last_block'].values())
         min_block = min(server_data['last_block'].values())
-        if max_block - min_block > 10:
+        if max_block - min_block > 100:
             # Send a Telegram alert if any backend falls behind
             message = "RPC Backend Alert:\n"
             for k, v in server_data['last_block'].items():
