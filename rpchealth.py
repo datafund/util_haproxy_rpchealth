@@ -93,7 +93,7 @@ async def update_health_status():
         server_data = await load_server_data()
         for key in server_data['servers']:
             rpc_address = server_data['servers'][key]
-            old_status = server_data['health_status'].get(key, 503)
+            old_status = server_data['health_status'].get(key, 200)
             health_status, block_number = await check_rpc_health(rpc_address, key, server_data)
 
             if health_status != old_status:
@@ -173,7 +173,7 @@ async def health_check(request):
     server_data = await load_server_data()
 
     if key not in server_data["health_status"]:
-        server_data["health_status"][key] = 503
+        server_data["health_status"][key] = 200
         rpc_address = await get_rpc_address(rpc_ip, rpc_port)
         server_data["servers"][key] = rpc_address
         await save_server_data(server_data)
