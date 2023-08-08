@@ -149,11 +149,13 @@ async def update_health_status():
 async def send_telegram_notification(message):
     telegram_api_key = os.getenv("TELEGRAM_API_KEY")  # Load the Telegram API key from environment variable
     chat_id = os.getenv("TELEGRAM_CHAT_ID")  # Load the Telegram chat ID from environment variable
-
+    host = os.getenv("HEALTH_HOST", "$HOSTNAME")
+    
     url = f"https://api.telegram.org/bot{telegram_api_key}/sendMessage"
+    full_message = host + " " + message
     payload = {
         "chat_id": chat_id,
-        "text": message
+        "text": full_messagee
     }
 
     async with aiohttp.ClientSession() as session:
