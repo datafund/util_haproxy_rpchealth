@@ -90,11 +90,12 @@ async def load_server_data():
 async def update_health_status():
     global health_check_task
     while True:
-        try:
-            server_data = await load_server_data()
-            for key in server_data['servers']:
-                rpc_address = server_data['servers'][key]
-                old_status = server_data['health_status'].get(key, 200)
+        server_data = await load_server_data()
+        for key in server_data['servers']:
+            rpc_address = server_data['servers'][key]
+            old_status = server_data['health_status'].get(key, 200)
+
+            try:
                 health_status, block_number = await check_rpc_health(rpc_address, key, server_data)
 
                 if health_status != old_status:
@@ -102,11 +103,11 @@ async def update_health_status():
                     logger.info(message)
                     await send_telegram_notification(message)
 
-                # Update last_block and stale_count for the current server
                 if block_number is not None:
                     if key not in server_data['stale_count']:
                         server_data['stale_count'][key] = 0
 
+                    # Check if block number is greater than the last recorded block number
                     if key not in server_data['last_block'] or block_number > server_data['last_block'][key]:
                         server_data['last_block'][key] = block_number
                         server_data['stale_count'][key] = 0
@@ -132,21 +133,28 @@ async def update_health_status():
                     logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status}")
                     server_data['stale_count'][key] = 0
 
-            # Check if any backend falls behind in last_block
-            max_block = max(server_data['last_block'].values())
-            min_block = min(server_data['last_block'].values())
-            if max_block - min_block > 100:
-                # Send a Telegram alert if any backend falls behind
-                message = "RPC Backend Alert:\n"
-                for k, v in server_data['last_block'].items():
-                    if max_block - v > 10:
-                        message += f"Backend {k} is behind in last_block.\n"
-                await send_telegram_notification(message)
+            except Exception as e:
+                # Handle exceptions that occurred during health check
+                logger.error(f"Error occurred while checking health status of {rpc_address}: {e}")
+                health_status = 503
+                server_data['health_status'][key] = health_status
 
+            # Save server data after each server update (including exceptions)
             await save_server_data(server_data)
-            await asyncio.sleep(HEALTH_CHECK_INTERVAL)
-        except Exception as e:
-            logger.error(f"Error in update_health_status: {e}")
+
+        # Check if any backend falls behind in last_block
+        max_block = max(server_data['last_block'].values())
+        min_block = min(server_data['last_block'].values())
+        if max_block - min_block > 100:
+            # Send a Telegram alert if any backend falls behind
+            message = "RPC Backend Alert:\n"
+            for k, v in server_data['last_block'].items():
+                if max_block - v > 10:
+                    message += f"Backend {k} is behind in last_block.\n"
+            await send_telegram_notification(message)
+
+        await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+
 
 async def send_telegram_notification(message):
     telegram_api_key = os.getenv("TELEGRAM_API_KEY")  # Load the Telegram API key from environment variable
