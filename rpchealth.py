@@ -158,7 +158,7 @@ async def send_telegram_notification(message):
     full_message = host + " " + message
     payload = {
         "chat_id": chat_id,
-        "text": full_messagee
+        "text": full_message
     }
 
     async with aiohttp.ClientSession() as session:
