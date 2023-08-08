@@ -97,40 +97,40 @@ async def update_health_status():
                 old_status = server_data['health_status'].get(key, 200)
                 health_status, block_number = await check_rpc_health(rpc_address, key, server_data)
 
-            if health_status != old_status:
-                message = f"Health status for {rpc_address} changed from {old_status} to {health_status}"
-                logger.info(message)
-                await send_telegram_notification(message)
+                if health_status != old_status:
+                    message = f"Health status for {rpc_address} changed from {old_status} to {health_status}"
+                    logger.info(message)
+                    await send_telegram_notification(message)
 
-            if block_number is not None:
-                if key not in server_data['stale_count']:
-                    server_data['stale_count'][key] = 0
+                # Update last_block and stale_count for the current server
+                if block_number is not None:
+                    if key not in server_data['stale_count']:
+                        server_data['stale_count'][key] = 0
 
-                # Check if block number is greater than the last recorded block number
-                if key not in server_data['last_block'] or block_number > server_data['last_block'][key]:
-                    server_data['last_block'][key] = block_number
-                    server_data['stale_count'][key] = 0
-                else:
-                    server_data['stale_count'][key] += 1
+                    if key not in server_data['last_block'] or block_number > server_data['last_block'][key]:
+                        server_data['last_block'][key] = block_number
+                        server_data['stale_count'][key] = 0
+                    else:
+                        server_data['stale_count'][key] += 1
 
-                if server_data['stale_count'][key] >= 2:
+                    if server_data['stale_count'][key] >= 2:
+                        health_status = 503
+
+                # Handle scenarios where block number is 0 or None
+                if block_number is None or block_number == 0:
                     health_status = 503
 
-            # Handle scenarios where block number is 0 or None
-            if block_number is None or block_number == 0:
-                health_status = 503
+                server_data['health_status'][key] = health_status
 
-            server_data['health_status'][key] = health_status
+                # Log the status change from "UP" to "DOWN" with reason
+                if health_status == 503 and old_status == 200:
+                    reason = "Stale Block" if server_data['stale_count'][key] >= 3 else "Unhealthy Status"
+                    logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status} ({reason})")
 
-            # Log the status change from "UP" to "DOWN" with reason
-            if health_status == 503 and old_status == 200:
-                reason = "Stale Block" if server_data['stale_count'][key] >= 3 else "Unhealthy Status"
-                logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status} ({reason})")
-
-            # Log the status change from "DOWN" to "UP"
-            if health_status == 200 and old_status != 200:
-                logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status}")
-                server_data['stale_count'][key] = 0
+                # Log the status change from "DOWN" to "UP"
+                if health_status == 200 and old_status != 200:
+                    logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status}")
+                    server_data['stale_count'][key] = 0
 
             # Check if any backend falls behind in last_block
             max_block = max(server_data['last_block'].values())
@@ -147,7 +147,6 @@ async def update_health_status():
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
         except Exception as e:
             logger.error(f"Error in update_health_status: {e}")
-
 
 async def send_telegram_notification(message):
     telegram_api_key = os.getenv("TELEGRAM_API_KEY")  # Load the Telegram API key from environment variable
