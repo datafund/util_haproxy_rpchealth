@@ -54,8 +54,15 @@ async def check_rpc_health(rpc_address, key, server_data):
                                 json={"jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1},
                             ) as block_response:
                                 block_data = await block_response.json()
+                                if "result" not in block_data:
+                                    logger.error(f"Invalid block number response from {rpc_address}")
+                                    return 503, None
+
                                 block_number_hex = block_data["result"]
                                 block_number = int(block_number_hex, 16)
+
+                                if block_number == 0:
+                                    return 503, None
 
                                 if key in server_data['last_block'] and block_number <= server_data['last_block'][key]:
                                     return 503, None
