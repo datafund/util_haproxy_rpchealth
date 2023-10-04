@@ -66,6 +66,9 @@ async def check_rpc_health(rpc_address, key, server_data):
                         except aiohttp.ClientError as e:
                             logger.error(f"Error occurred while retrieving block number from {rpc_address}: {e}")
                             return 503, None
+
+                    logger.error(f"Response from {rpc_address} was not healthy")
+                    return 503, None
                 else:
                     logger.error(f"Response from {rpc_address} was not 200")
                     return 503, None
