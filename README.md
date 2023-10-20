@@ -60,7 +60,10 @@ The configuration options for the health checker are set through the following c
 
 - `SERVER_DATA_FILE`: The path to the file where the server data is saved. Default is `server_data.json`.
 - `HEALTH_CHECK_INTERVAL`: The interval (in seconds) between health checks. Default is `60`.
-
+- `TELEGRAM_API_KEY` : Load the Telegram API key for notifications
+- `TELEGRAM_CHAT_ID`
+  ** there will be errors if no telegram notifications are configure **TODO fix
+  
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more information.
