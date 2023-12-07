@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 SERVER_DATA_FILE = "server_data.json"
 HEALTH_CHECK_INTERVAL = 60
-health_status_lock = asyncio.Lock()
+file_write_lock = asyncio.Lock()
 
 backend_servers = set()
 health_check_task = None  # Task for the periodic health check
@@ -89,9 +89,11 @@ async def check_rpc_health(rpc_address, key, server_data):
 
 
 async def save_server_data(server_data):
-    with open(SERVER_DATA_FILE, 'w') as outfile:
-        json.dump(server_data, outfile)
-
+    async with file_write_lock:  # Acquire the lock before writing to the file
+        with open(SERVER_DATA_FILE, 'w') as outfile:
+            json.dump(server_data, outfile)
+            outfile.flush()  # Flush the internal buffer
+            os.fsync(outfile.fileno())  # Sync the file to disk
 
 async def load_server_data():
     if os.path.isfile(SERVER_DATA_FILE):
@@ -136,21 +138,23 @@ async def update_health_status():
 
                 server_data['health_status'][key] = health_status
 
-                # Log the status change from "UP" to "DOWN" with reason
                 if health_status == 503 and old_status == 200:
                     reason = "Stale Block" if server_data['stale_count'][key] >= 3 else "Unhealthy Status"
                     logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status} ({reason})")
 
-                # Log the status change from "DOWN" to "UP"
-                if health_status == 200 and old_status != 200:
+                elif health_status == 200 and old_status != 200:
                     logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status}")
                     server_data['stale_count'][key] = 0
 
-            except Exception as e:
-                # Handle exceptions that occurred during health check
-                logger.error(f"Error occurred while checking health status of {rpc_address}: {e}")
+            except (ConnectionRefusedError, TimeoutError, RPCError) as e:
+                # Mark as unhealthy due to network or RPC issues
                 health_status = 503
+                logger.error(f"Error checking health status of {rpc_address}: {e}")
                 server_data['health_status'][key] = health_status
+
+            except Exception as e:
+                # Record error but don't mark as unhealthy
+                logger.error(f"Unexpected error checking health status of {rpc_address}: {e}")
 
             # Save server data after each server update (including exceptions)
             await save_server_data(server_data)
