@@ -17,6 +17,8 @@ file_write_lock = asyncio.Lock()
 backend_servers = set()
 health_check_task = None  # Task for the periodic health check
 
+class RPCError(Exception):
+    pass
 
 async def get_rpc_address(rpc_ip, rpc_port):
     if rpc_ip and rpc_port:
@@ -35,6 +37,7 @@ async def get_rpc_address(rpc_ip, rpc_port):
 
 
 async def check_rpc_health(rpc_address, key, server_data):
+    global health_check_task
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(f"{rpc_address}/health", timeout=10) as response:
@@ -78,6 +81,7 @@ async def check_rpc_health(rpc_address, key, server_data):
                     return 503, None
                 else:
                     logger.error(f"Response from {rpc_address} was not 200")
+                    health_check_task=None
                     return 503, None
 
             # Return 503 and None if the status is not healthy or if syncing
@@ -85,6 +89,7 @@ async def check_rpc_health(rpc_address, key, server_data):
 
         except aiohttp.ClientError as e:
             logger.error(f"Error occurred while checking health status of {rpc_address}: {e}")
+            health_check_task=None
             return 503, None
 
 
