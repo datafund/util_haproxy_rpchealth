@@ -6,6 +6,7 @@ import aiohttp
 from aiohttp import web
 import requests
 
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -28,13 +29,11 @@ async def get_rpc_address(rpc_ip, rpc_port):
                 async with session.get(f"https://{rpc_ip}:{rpc_port}", timeout=3) as response:
                     if response.status == 200:
                         protocol = "https"
-        except (aiohttp.ClientError, ValueError):
-            pass
+        except (aiohttp.ClientError, OSError) as e:
+            logger.warning(f"Error connecting to {rpc_ip}:{rpc_port} over HTTPS: {e}")
+            return None
 
         return f"{protocol}://{rpc_ip}:{rpc_port}"
-    else:
-        return None
-
 
 async def check_rpc_health(rpc_address, key, server_data):
     global health_check_task
@@ -73,7 +72,7 @@ async def check_rpc_health(rpc_address, key, server_data):
                                 # Return 200 and the block number
                                 return 200, block_number
 
-                        except aiohttp.ClientError as e:
+                        except (aiohttp.ClientError, OSError) as e:
                             logger.error(f"Error occurred while retrieving block number from {rpc_address}: {e}")
                             return 503, None
 
@@ -87,7 +86,7 @@ async def check_rpc_health(rpc_address, key, server_data):
             # Return 503 and None if the status is not healthy or if syncing
             return 503, None
 
-        except aiohttp.ClientError as e:
+        except (aiohttp.ClientError, OSError) as e:
             logger.error(f"Error occurred while checking health status of {rpc_address}: {e}")
             health_check_task=None
             return 503, None
@@ -114,55 +113,57 @@ async def update_health_status():
         for key in server_data['servers']:
             rpc_address = server_data['servers'][key]
             old_status = server_data['health_status'].get(key, 200)
+            if rpc_address is not None:
+                try:
+                    health_status, block_number = await check_rpc_health(rpc_address, key, server_data)
 
-            try:
-                health_status, block_number = await check_rpc_health(rpc_address, key, server_data)
+                    if health_status != old_status:
+                        message = f"Health status for {rpc_address} changed from {old_status} to {health_status}"
+                        logger.info(message)
+                        await send_telegram_notification(message)
 
-                if health_status != old_status:
-                    message = f"Health status for {rpc_address} changed from {old_status} to {health_status}"
-                    logger.info(message)
-                    await send_telegram_notification(message)
+                    if block_number is not None:
+                        if key not in server_data['stale_count']:
+                            server_data['stale_count'][key] = 0
 
-                if block_number is not None:
-                    if key not in server_data['stale_count']:
-                        server_data['stale_count'][key] = 0
+                        # Check if block number is greater than the last recorded block number
+                        if key not in server_data['last_block'] or block_number > server_data['last_block'][key]:
+                            server_data['last_block'][key] = block_number
+                            server_data['stale_count'][key] = 0
+                        else:
+                            server_data['stale_count'][key] += 1
 
-                    # Check if block number is greater than the last recorded block number
-                    if key not in server_data['last_block'] or block_number > server_data['last_block'][key]:
-                        server_data['last_block'][key] = block_number
-                        server_data['stale_count'][key] = 0
-                    else:
-                        server_data['stale_count'][key] += 1
+                        if server_data['stale_count'][key] >= 2:
+                            health_status = 503
 
-                    if server_data['stale_count'][key] >= 2:
+                    # Handle scenarios where block number is 0 or None
+                    if block_number is None or block_number == 0:
                         health_status = 503
 
-                # Handle scenarios where block number is 0 or None
-                if block_number is None or block_number == 0:
+                    server_data['health_status'][key] = health_status
+
+                    if health_status == 503 and old_status == 200:
+                        reason = "Stale Block" if server_data['stale_count'][key] >= 3 else "Unhealthy Status"
+                        logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status} ({reason})")
+
+                    elif health_status == 200 and old_status != 200:
+                        logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status}")
+                        server_data['stale_count'][key] = 0
+
+                except (ConnectionRefusedError, TimeoutError, RPCError, OSError) as e:
+                    # Mark as unhealthy due to network or RPC issues
                     health_status = 503
+                    logger.error(f"Error checking health status of {rpc_address}: {e}")
+                    server_data['health_status'][key] = health_status
 
-                server_data['health_status'][key] = health_status
+                except Exception as e:
+                    # Record error but don't mark as unhealthy
+                    logger.error(f"Unexpected error checking health status of {rpc_address}: {e}")
 
-                if health_status == 503 and old_status == 200:
-                    reason = "Stale Block" if server_data['stale_count'][key] >= 3 else "Unhealthy Status"
-                    logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status} ({reason})")
-
-                elif health_status == 200 and old_status != 200:
-                    logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status}")
-                    server_data['stale_count'][key] = 0
-
-            except (ConnectionRefusedError, TimeoutError, RPCError) as e:
-                # Mark as unhealthy due to network or RPC issues
+                # Save server data after each server update (including exceptions)
+                await save_server_data(server_data)
+            else:
                 health_status = 503
-                logger.error(f"Error checking health status of {rpc_address}: {e}")
-                server_data['health_status'][key] = health_status
-
-            except Exception as e:
-                # Record error but don't mark as unhealthy
-                logger.error(f"Unexpected error checking health status of {rpc_address}: {e}")
-
-            # Save server data after each server update (including exceptions)
-            await save_server_data(server_data)
 
         # Check if any backend falls behind in last_block
         max_block = max(server_data['last_block'].values())
@@ -215,7 +216,7 @@ async def health_check(request):
     if health_check_task is None:
         health_check_task = asyncio.create_task(update_health_status())
 
-    if server_data["health_status"][key] == 200:
+    if server_data["health_status"][key] == 200 and server_data["servers"][key] is not None:
         return web.Response(text="UP")
     else:
         return web.Response(text="DOWN")
