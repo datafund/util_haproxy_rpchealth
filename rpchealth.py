@@ -23,17 +23,17 @@ class RPCError(Exception):
 
 async def get_rpc_address(rpc_ip, rpc_port):
     if rpc_ip and rpc_port:
-        protocol = "http"
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"https://{rpc_ip}:{rpc_port}", timeout=3) as response:
-                    if response.status == 200:
-                        protocol = "https"
-                        return f"{protocol}://{rpc_ip}:{rpc_port}"
-        except (OSError) as e:
-            logger.warning(f"Error connecting to {rpc_ip}:{rpc_port} over HTTPS: {e}")
-            return None
-        return f"{protocol}://{rpc_ip}:{rpc_port}"
+        for protocol in ["http", "https"]:  # Iterate through protocols
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(f"{protocol}://{rpc_ip}:{rpc_port}", timeout=3) as response:
+                        if response.status == 200:
+                            return f"{protocol}://{rpc_ip}:{rpc_port}"  # Success!
+            except (aiohttp.ClientError, OSError, ValueError) as e:
+                logger.warning(f"Error connecting to {rpc_ip}:{rpc_port} over {protocol}: {e}")
+
+        # If we reach here, both HTTP and HTTPS failed
+        return None
     else:
         return None
 
