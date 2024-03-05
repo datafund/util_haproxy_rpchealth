@@ -29,11 +29,13 @@ async def get_rpc_address(rpc_ip, rpc_port):
                 async with session.get(f"https://{rpc_ip}:{rpc_port}", timeout=3) as response:
                     if response.status == 200:
                         protocol = "https"
-        except (aiohttp.ClientError, OSError) as e:
+                        return f"{protocol}://{rpc_ip}:{rpc_port}"
+        except (OSError) as e:
             logger.warning(f"Error connecting to {rpc_ip}:{rpc_port} over HTTPS: {e}")
             return None
-
         return f"{protocol}://{rpc_ip}:{rpc_port}"
+    else:
+        return None
 
 async def check_rpc_health(rpc_address, key, server_data):
     global health_check_task
