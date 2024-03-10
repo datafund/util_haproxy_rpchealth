@@ -26,7 +26,7 @@ async def get_rpc_address(rpc_ip, rpc_port):
         for protocol in ["http", "https"]:  # Iterate through protocols
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(f"{protocol}://{rpc_ip}:{rpc_port}", timeout=3) as response:
+                    async with session.get(f"{protocol}://{rpc_ip}:{rpc_port}", timeout=5) as response:
                         if response.status == 200:
                             return f"{protocol}://{rpc_ip}:{rpc_port}"  # Success!
             except (aiohttp.ClientError, OSError, ValueError) as e:
@@ -41,7 +41,7 @@ async def check_rpc_health(rpc_address, key, server_data):
     global health_check_task
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(f"{rpc_address}/health", timeout=3) as response:
+            async with session.get(f"{rpc_address}/health", timeout=5) as response:
                 if response.status == 200:
                     health_data = await response.json()
 
