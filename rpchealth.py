@@ -66,9 +66,10 @@ async def check_rpc_health(rpc_address, key, server_data):
                                 block_number = int(block_number_hex, 16)
 
                                 if block_number == 0:
+                                    logger.error(f"block number was 0 for {rpc_address}")
                                     return 503, None
 
-                                if key in server_data['last_block'] and block_number <= server_data['last_block'][key]:
+                                if key in server_data['last_block'] and block_number < server_data['last_block'][key]:
                                     return 503, None
 
                                 # Return 200 and the block number
@@ -86,6 +87,7 @@ async def check_rpc_health(rpc_address, key, server_data):
                     return 503, None
 
             # Return 503 and None if the status is not healthy or if syncing
+            logger.error(f"Unhealthy or syncing {rpc_address} ")
             return 503, None
 
         except (aiohttp.ClientError, OSError) as e:
@@ -140,6 +142,7 @@ async def update_health_status():
 
                     # Handle scenarios where block number is 0 or None
                     if block_number is None or block_number == 0:
+                        logger.info(f"health was 0 or none for {rpc_address}")
                         health_status = 503
 
                     server_data['health_status'][key] = health_status
@@ -165,6 +168,7 @@ async def update_health_status():
                 # Save server data after each server update (including exceptions)
                 await save_server_data(server_data)
             else:
+                logger.info(f"health was skipped for {rpc_address}")
                 health_status = 503
 
         # Check if any backend falls behind in last_block
