@@ -137,7 +137,7 @@ async def update_health_status():
                         else:
                             server_data['stale_count'][key] += 1
 
-                        if server_data['stale_count'][key] >= 2:
+                        if server_data['stale_count'][key] >= 10:
                             health_status = 503
 
                     # Handle scenarios where block number is 0 or None
