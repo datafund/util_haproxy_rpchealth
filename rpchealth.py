@@ -178,7 +178,7 @@ async def update_health_status():
             # Send a Telegram alert if any backend falls behind
             message = "RPC Backend Alert:\n"
             for k, v in server_data['last_block'].items():
-                if max_block - v > 10:
+                if max_block - v > 100:
                     message += f"Backend {k} is behind in last_block.\n"
             await send_telegram_notification(message)
 
