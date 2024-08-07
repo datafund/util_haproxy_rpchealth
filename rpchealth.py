@@ -41,7 +41,7 @@ async def check_rpc_health(rpc_address, key, server_data):
     global health_check_task
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(f"{rpc_address}/health", timeout=10) as response:
+            async with session.get(f"{rpc_address}/health", timeout=30) as response:
                 if response.status == 200:
                     health_data = await response.json()
 
