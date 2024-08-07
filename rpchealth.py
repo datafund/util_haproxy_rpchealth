@@ -165,6 +165,10 @@ async def update_health_status():
                     # Record error but don't mark as unhealthy
                     logger.error(f"Unexpected error checking health status of {rpc_address}: {e}")
 
+                if block_number is not None and block_number > 0:
+                    server_data['last_block'][key] = block_number
+                    server_data['stale_count'][key] = 0
+
                 # Save server data after each server update (including exceptions)
                 await save_server_data(server_data)
             else:
