@@ -1,11 +1,9 @@
 import logging
-import json
-import os
 import asyncio
 import aiohttp
+import json
+import os
 from aiohttp import web
-import requests
-
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,8 +16,10 @@ file_write_lock = asyncio.Lock()
 backend_servers = set()
 health_check_task = None  # Task for the periodic health check
 
+
 class RPCError(Exception):
     pass
+
 
 async def get_rpc_address(rpc_ip, rpc_port):
     if rpc_ip and rpc_port:
@@ -37,8 +37,8 @@ async def get_rpc_address(rpc_ip, rpc_port):
     else:
         return None
 
+
 async def check_rpc_health(rpc_address, key, server_data):
-    global health_check_task
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(f"{rpc_address}/health", timeout=30) as response:
@@ -50,6 +50,7 @@ async def check_rpc_health(rpc_address, key, server_data):
                         is_syncing = node_health.get("data", {}).get("IsSyncing", False)
 
                         if is_syncing:
+                            logger.info(f"Server {rpc_address} is syncing.")
                             return 503, None
 
                         try:
@@ -66,7 +67,7 @@ async def check_rpc_health(rpc_address, key, server_data):
                                 block_number = int(block_number_hex, 16)
 
                                 if block_number == 0:
-                                    logger.error(f"block number was 0 for {rpc_address}")
+                                    logger.error(f"Block number was 0 for {rpc_address}")
                                     return 503, None
 
                                 if key in server_data['last_block'] and block_number < server_data['last_block'][key]:
@@ -83,16 +84,10 @@ async def check_rpc_health(rpc_address, key, server_data):
                     return 503, None
                 else:
                     logger.error(f"Response from {rpc_address} was not 200")
-                    health_check_task=None
                     return 503, None
-
-            # Return 503 and None if the status is not healthy or if syncing
-            logger.error(f"Unhealthy or syncing {rpc_address} ")
-            return 503, None
 
         except (aiohttp.ClientError, OSError) as e:
             logger.error(f"Error occurred while checking health status of {rpc_address}: {e}")
-            health_check_task=None
             return 503, None
 
 
@@ -102,6 +97,7 @@ async def save_server_data(server_data):
             json.dump(server_data, outfile)
             outfile.flush()  # Flush the internal buffer
             os.fsync(outfile.fileno())  # Sync the file to disk
+
 
 async def load_server_data():
     if os.path.isfile(SERVER_DATA_FILE):
@@ -142,7 +138,7 @@ async def update_health_status():
 
                     # Handle scenarios where block number is 0 or None
                     if block_number is None or block_number == 0:
-                        logger.info(f"health was 0 or none for {rpc_address}")
+                        logger.info(f"Block number was 0 or None for {rpc_address}")
                         health_status = 503
 
                     server_data['health_status'][key] = health_status
@@ -168,27 +164,24 @@ async def update_health_status():
                 # Save server data after each server update (including exceptions)
                 await save_server_data(server_data)
 
-                #if block_number is not None and block_number > 0:
-                #    server_data['last_block'][key] = block_number
-                #    server_data['stale_count'][key] = 0
-
             else:
-                logger.info(f"health was skipped for {rpc_address}")
+                logger.info(f"Health check skipped for {rpc_address}")
                 health_status = 503
 
         # Save server data after each server update (including exceptions)
         await save_server_data(server_data)
 
         # Check if any backend falls behind in last_block
-        max_block = max(server_data['last_block'].values())
-        min_block = min(server_data['last_block'].values())
-        if max_block - min_block > 200:
-            # Send a Telegram alert if any backend falls behind
-            message = "RPC Backend Alert:\n"
-            for k, v in server_data['last_block'].items():
-                if max_block - v > 100:
-                    message += f"Backend {k} is behind in last_block.\n"
-            await send_telegram_notification(message)
+        if server_data['last_block']:
+            max_block = max(server_data['last_block'].values())
+            min_block = min(server_data['last_block'].values())
+            if max_block - min_block > 200:
+                # Send a Telegram alert if any backend falls behind
+                message = "RPC Backend Alert:\n"
+                for k, v in server_data['last_block'].items():
+                    if max_block - v > 100:
+                        message += f"Backend {k} is behind in last_block.\n"
+                await send_telegram_notification(message)
 
         await asyncio.sleep(HEALTH_CHECK_INTERVAL)
 
@@ -197,7 +190,7 @@ async def send_telegram_notification(message):
     telegram_api_key = os.getenv("TELEGRAM_API_KEY")  # Load the Telegram API key from environment variable
     chat_id = os.getenv("TELEGRAM_CHAT_ID")  # Load the Telegram chat ID from environment variable
     host = os.getenv("HEALTH_HOST", "$HOSTNAME")
-    
+
     url = f"https://api.telegram.org/bot{telegram_api_key}/sendMessage"
     full_message = host + " " + message
     payload = {
@@ -212,6 +205,7 @@ async def send_telegram_notification(message):
             else:
                 logger.error("Failed to send Telegram notification")
 
+
 @routes.get('/health')
 async def health_check(request):
     global health_check_task
@@ -222,15 +216,23 @@ async def health_check(request):
     server_data = await load_server_data()
 
     if key not in server_data["health_status"]:
-        server_data["health_status"][key] = 200
         rpc_address = await get_rpc_address(rpc_ip, rpc_port)
         server_data["servers"][key] = rpc_address
+        server_data["health_status"][key] = 503  # Default to unhealthy until proven healthy
         await save_server_data(server_data)
 
+    # Perform an immediate health check if the health_check_task is not running
     if health_check_task is None:
         health_check_task = asyncio.create_task(update_health_status())
 
-    if server_data["health_status"][key] == 200 and server_data["servers"][key] is not None:
+    # Perform an immediate health check
+    rpc_address = server_data["servers"].get(key)
+    if rpc_address:
+        health_status, _ = await check_rpc_health(rpc_address, key, server_data)
+        server_data["health_status"][key] = health_status
+        await save_server_data(server_data)
+
+    if server_data["health_status"][key] == 200:
         return web.Response(text="UP")
     else:
         return web.Response(text="DOWN")
@@ -252,8 +254,10 @@ async def main():
     except Exception as e:
         logger.error(f"Error in main: {e}")
 
+
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except Exception as e:
         logger.error(f"Error in __main__: {e}")
+
