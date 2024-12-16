@@ -69,8 +69,24 @@ async def check_rpc_health(rpc_address, key, server_data):
                                     logger.error(f"Block number was 0 for {rpc_address}")
                                     return 503, None
 
-                                if key in server_data['last_block'] and block_number < server_data['last_block'][key]:
-                                    return 503, None
+
+                                if key in server_data['last_block']:
+                                    block_diff = block_number - server_data['last_block'][key]
+
+                                    if block_diff < 0:
+                                        server_data['stale_count'][key] += 1
+                                        logger.warning(f"Server {key} ({rpc_address}) is behind by {-block_diff} blocks "
+                                                       f"(stale count: {server_data['stale_count'][key]})")
+                                    else:  # Server has caught up or is ahead
+                                        if server_data['stale_count'][key] > 0:
+                                            logger.info(f"Server {key} ({rpc_address}) has recovered (block diff: {block_diff})")
+                                        server_data['stale_count'][key] = 0 
+
+                                server_data['last_block'][key] = block_number
+
+                                if server_data['stale_count'][key] >= 100:
+                                    logger.error(f"Server {key} ({rpc_address}) is stale (count: {server_data['stale_count'][key]})")
+                                    return 503, block_number
 
                                 return 200, block_number
 
