@@ -273,32 +273,43 @@ async def update_health_status():
                 if key in server_data["failure_count"]:
                     del server_data["failure_count"][key]
 
-            # --- CONTINUOUS BLOCK DIFFERENCE CHECK ---
-            if server_data.get('last_block'):
-                valid_blocks = [b for b in server_data['last_block'].values() if b is not None]
-                max_block = max(valid_blocks, default=0)
-                if server_data['last_block'].get(key) is not None and (max_block - server_data['last_block'][key] > (STALE_THRESHOLD * 5)):
-                    health_status = 503
-                    server_data['health_status'][key] = health_status  # Update health status
-                    logger.warning(f"Server {key} marked unhealthy due to continuous block difference.")
-            # --- END CONTINUOUS BLOCK DIFFERENCE CHECK ---
+            valid_blocks = [b for b in server_data.get('last_block', {}).values() if b is not None]
+            if valid_blocks:  # Only proceed if there are valid block numbers
+                max_block = max(valid_blocks)
+                current_server_block = server_data['last_block'].get(key)  # Get current server's block
+
+                if current_server_block is not None and max_block - current_server_block > STALE_THRESHOLD:
+                    server_data['health_status'][key] = 503  # Mark as unhealthy  <-- THIS WAS MISSING
+                    logger.warning(f"Server {key} marked unhealthy due to continuous block difference (behind by {max_block - current_server_block}).")
+                    # Add these two lines:
+                    server_data['failure_count'][key] = server_data["failure_count"].get(key, 0) + 1 #increment failure
+                    await save_server_data(server_data) # <--- AND THIS.  SAVE THE DATA!
 
             await save_server_data(server_data)
 
 
-        # Check for large block differences
+        # --- Check for large block differences (with notification on change) ---
         if server_data.get('last_block'):
-            # Filter out None values and handle empty list
             valid_blocks = [b for b in server_data['last_block'].values() if b is not None]
             max_block = max(valid_blocks, default=0)
             min_block = min(valid_blocks, default=0)
 
-            if max_block - min_block > (STALE_THRESHOLD * 5):  # Use STALE_THRESHOLD (adjust multiplier as needed)
-                message = "RPC Backend Alert:\n"
-                for k, v in server_data['last_block'].items():
-                    if v is not None and max_block - v > (STALE_THRESHOLD * 2):  # Check for None and use STALE_THRESHOLD
-                        message += f"Backend {k} is behind in last_block.\n"
-                await send_telegram_notification(message)
+            current_block_diff_large = max_block - min_block > (STALE_THRESHOLD * 5)  # True if large difference
+
+            # Get the previous large block difference status (default to False if it doesn't exist)
+            previous_block_diff_large = server_data.get('block_diff_large', False)
+
+            if current_block_diff_large != previous_block_diff_large:  # Only proceed if status changed
+                server_data['block_diff_large'] = current_block_diff_large  # Update the stored status
+                await save_server_data(server_data) #save the status.
+
+                if current_block_diff_large: #if it is currently large
+                    message = "RPC Backend Alert:\n"
+                    for k, v in server_data['last_block'].items():
+                        if v is not None and max_block - v > (STALE_THRESHOLD * 2):
+                            message += f"Backend {k} is behind in last_block.\n"
+                    await send_telegram_notification(message)
+        # --- End of block difference check ---
 
         await asyncio.sleep(HEALTH_CHECK_INTERVAL)
 
