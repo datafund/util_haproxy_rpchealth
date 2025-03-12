@@ -166,20 +166,20 @@ async def update_health_status():
         for key in list(server_data['servers'].keys()):  # Iterate on a copy to allow deletion
             rpc_address = server_data['servers'].get(key)
             old_status = server_data['health_status'].get(key, 200)  # Default to 200 if not found
-
+            
             # Attempt to get a valid RPC address if the current one is a placeholder
-            if rpc_address == key :  # Check if it's a placeholder
+            if rpc_address == key:  # Check if it's a placeholder
                 logger.debug(f"Attempting to resolve placeholder address for {key}")
                 rpc_ip, rpc_port = key.split(":")
                 rpc_address = await get_rpc_address(rpc_ip, rpc_port)
                 if rpc_address:
                     logger.info(f"Resolved placeholder address for {key} to {rpc_address}")
                     server_data['servers'][key] = rpc_address  # Update with the real address
-                    server_data["failure_count"][key] = 0 #reset failure count
+                    server_data["failure_count"][key] = 0  # reset failure count
                 else:
-                      server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
+                    server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
 
-            if rpc_address is None or rpc_address == key:  #still couldn't get rpc address
+            if rpc_address is None or rpc_address == key:  # still couldn't get rpc address
                 logger.warning(f"Skipping health check for {key} due to invalid RPC address.")
                 # Increment failure count and potentially remove
                 server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
@@ -196,25 +196,30 @@ async def update_health_status():
                         del server_data["failure_count"][key]
                     await save_server_data(server_data)
                 else:
-                    await save_server_data(server_data) # Save failure count
+                    await save_server_data(server_data)  # Save failure count
                 continue
 
+            # Default new status to unhealthy until proven otherwise
+            health_status = 503
+            block_number = None
+            health_reason = "Initial check"
 
+            # Try to get the health status from the server with retries
             for attempt in range(MAX_RETRIES):
                 try:
-                    health_status, block_number = await check_rpc_health(rpc_address, key, server_data)
-
-                    if health_status != old_status:
-                        message = f"Health status for {rpc_address} changed from {old_status} to {health_status}"
-                        logger.info(message)
-                        await send_telegram_notification(message)  # Send notification on status change
-
-
+                    initial_health_status, initial_block_number = await check_rpc_health(rpc_address, key, server_data)
+                    
+                    # Set the health status and block number from the initial check
+                    health_status = initial_health_status
+                    block_number = initial_block_number
+                    
                     if health_status == 200:
-                        server_data["failure_count"][key] = 0 #reset failure count
+                        server_data["failure_count"][key] = 0  # reset failure count
                     else:
                         server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
-
+                        health_reason = "RPC health check"
+                        
+                    # Process block number if valid
                     if block_number is not None:
                         if key not in server_data['stale_count']:
                             server_data['stale_count'][key] = 0  # Initialize if not present
@@ -227,22 +232,13 @@ async def update_health_status():
                             server_data['stale_count'][key] += 1
                             if server_data['stale_count'][key] >= STALE_THRESHOLD:
                                 health_status = 503
-                    # If block number is invalid, mark as unhealthy
+                                health_reason = "Stale block"
+                    
+                    # Check for invalid block number
                     if block_number is None or block_number == 0:
-                        logger.info(f"Block number was 0 or None for {rpc_address}")
                         health_status = 503
-
-
-                    server_data['health_status'][key] = health_status
-
-                    # Log health status changes
-                    if health_status == 503 and old_status == 200:
-                        reason = "Stale Block" if server_data['stale_count'][key] >= STALE_THRESHOLD else "Unhealthy Status"
-                        logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status} ({reason})")
-                    elif health_status == 200 and old_status != 200:
-                        logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status}")
-                        server_data['stale_count'][key] = 0 #reset if healthy
-
+                        health_reason = "Invalid block number"
+                    
                     break  # Exit retry loop on success
 
                 except (ConnectionRefusedError, TimeoutError, RPCError, OSError) as e:
@@ -250,17 +246,17 @@ async def update_health_status():
                     server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
                     if attempt == MAX_RETRIES - 1:
                         health_status = 503
-                        server_data['health_status'][key] = health_status
-                        logger.error(f"Marking {rpc_address} as unhealthy after multiple retries.")
+                        health_reason = f"Failed after {MAX_RETRIES} retries"
                     else:
                         await asyncio.sleep(RETRY_DELAY)
                 except Exception as e:
                     logger.exception(f"Unexpected error checking health status of {rpc_address}: {e}")
                     server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
                     health_status = 503
-                    server_data['health_status'][key] = health_status
-                    break # Exit retry loop for unexpected exceptions
+                    health_reason = f"Unexpected error: {str(e)}"
+                    break  # Exit retry loop for unexpected exceptions
 
+            # Check for server removal due to failures
             if server_data["failure_count"].get(key, 0) >= REMOVE_AFTER_FAILURES:
                 logger.info(f"Removing server {key} due to persistent failures.")
                 del server_data["servers"][key]
@@ -272,43 +268,65 @@ async def update_health_status():
                     del server_data["stale_count"][key]
                 if key in server_data["failure_count"]:
                     del server_data["failure_count"][key]
+                await save_server_data(server_data)
+                continue  # Skip the rest for this server
 
-            valid_blocks = [b for b in server_data.get('last_block', {}).values() if b is not None]
-            if valid_blocks:  # Only proceed if there are valid block numbers
-                max_block = max(valid_blocks)
-                current_server_block = server_data['last_block'].get(key)  # Get current server's block
+            # Final check: Block difference against other servers
+            if health_status == 200:  # Only check block difference if otherwise healthy
+                valid_blocks = [b for b in server_data.get('last_block', {}).values() if b is not None]
+                if valid_blocks:  # Only proceed if there are valid block numbers
+                    max_block = max(valid_blocks)
+                    current_server_block = server_data['last_block'].get(key)  # Get current server's block
 
-                if current_server_block is not None and max_block - current_server_block > STALE_THRESHOLD:
-                    server_data['health_status'][key] = 503  # Mark as unhealthy  <-- THIS WAS MISSING
-                    logger.warning(f"Server {key} marked unhealthy due to continuous block difference (behind by {max_block - current_server_block}).")
-                    # Add these two lines:
-                    server_data['failure_count'][key] = server_data["failure_count"].get(key, 0) + 1 #increment failure
-                    await save_server_data(server_data) # <--- AND THIS.  SAVE THE DATA!
+                    if current_server_block is not None and max_block - current_server_block > STALE_THRESHOLD:
+                        health_status = 503  # Mark as unhealthy
+                        health_reason = f"Block difference (behind by {max_block - current_server_block})"
+                        server_data['failure_count'][key] = server_data["failure_count"].get(key, 0) + 1  # increment failure
+
+            # Now that all health checks are complete, update the status and notify if changed
+            if health_status != old_status:
+                server_data['health_status'][key] = health_status
+                
+                if health_status == 503 and old_status == 200:
+                    logger.warning(f"Health status for {rpc_address} changed from {old_status} to {health_status} ({health_reason})")
+                else:
+                    logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status} ({health_reason})")
+                
+                # Send notification for status change
+                message = f"Health status for {rpc_address} changed from {old_status} to {health_status} ({health_reason})"
+                await send_telegram_notification(message)
+            else:
+                # Status didn't change, but still update in the data structure
+                server_data['health_status'][key] = health_status
+                
+                # If status is 503 due to block difference but was already 503, log a warning without notification
+                if health_status == 503 and health_reason.startswith("Block difference"):
+                    logger.warning(f"Server {key} remains unhealthy due to {health_reason}")
 
             await save_server_data(server_data)
-
 
         # --- Check for large block differences (with notification on change) ---
         if server_data.get('last_block'):
             valid_blocks = [b for b in server_data['last_block'].values() if b is not None]
-            max_block = max(valid_blocks, default=0)
-            min_block = min(valid_blocks, default=0)
+            if valid_blocks:  # Only proceed if there are valid blocks
+                max_block = max(valid_blocks)
+                min_block = min(valid_blocks)
 
-            current_block_diff_large = max_block - min_block > (STALE_THRESHOLD * 5)  # True if large difference
+                current_block_diff_large = max_block - min_block > (STALE_THRESHOLD * 5)  # True if large difference
 
-            # Get the previous large block difference status (default to False if it doesn't exist)
-            previous_block_diff_large = server_data.get('block_diff_large', False)
+                # Get the previous large block difference status (default to False if it doesn't exist)
+                previous_block_diff_large = server_data.get('block_diff_large', False)
 
-            if current_block_diff_large != previous_block_diff_large:  # Only proceed if status changed
-                server_data['block_diff_large'] = current_block_diff_large  # Update the stored status
-                await save_server_data(server_data) #save the status.
+                if current_block_diff_large != previous_block_diff_large:  # Only proceed if status changed
+                    server_data['block_diff_large'] = current_block_diff_large  # Update the stored status
+                    await save_server_data(server_data)  # save the status.
 
-                if current_block_diff_large: #if it is currently large
-                    message = "RPC Backend Alert:\n"
-                    for k, v in server_data['last_block'].items():
-                        if v is not None and max_block - v > (STALE_THRESHOLD * 2):
-                            message += f"Backend {k} is behind in last_block.\n"
-                    await send_telegram_notification(message)
+                    if current_block_diff_large:  # if it is currently large
+                        message = "RPC Backend Alert:\n"
+                        for k, v in server_data['last_block'].items():
+                            if v is not None and max_block - v > (STALE_THRESHOLD * 2):
+                                message += f"Backend {k} is behind in last_block.\n"
+                        await send_telegram_notification(message)
         # --- End of block difference check ---
 
         await asyncio.sleep(HEALTH_CHECK_INTERVAL)
