@@ -109,7 +109,7 @@ async def check_rpc_health(rpc_address, key, server_data):
                         return 503, None
 
                     # Check if block number is decreasing
-                    if key in server_data['last_block'] and block_number < server_data['last_block'][key]:
+                    if key in server_data['last_block'] and server_data['last_block'][key] is not None and block_number < server_data['last_block'][key]:
                         logger.warning(f"Block number decreased for {rpc_address}")
                         return 503, None  # Treat decreasing block number as unhealthy
 
@@ -222,14 +222,13 @@ async def update_health_status():
                             server_data['stale_count'][key] = 0  # Initialize if not present
 
                         # Update last_block and reset stale_count if block number increased
-                        if key not in server_data['last_block'] or block_number > server_data['last_block'][key]:
+                        if key not in server_data['last_block'] or block_number > (server_data['last_block'].get(key) or 0):
                             server_data['last_block'][key] = block_number
                             server_data['stale_count'][key] = 0
                         else:
-                            server_data['stale_count'][key] += 1  # Increment stale counter
+                            server_data['stale_count'][key] += 1
                             if server_data['stale_count'][key] >= STALE_THRESHOLD:
-                                health_status = 503 #mark as unhealthy
-
+                                health_status = 503
                     # If block number is invalid, mark as unhealthy
                     if block_number is None or block_number == 0:
                         logger.info(f"Block number was 0 or None for {rpc_address}")
@@ -281,12 +280,15 @@ async def update_health_status():
 
         # Check for large block differences
         if server_data.get('last_block'):
-            max_block = max(server_data['last_block'].values())
-            min_block = min(server_data['last_block'].values())
-            if max_block - min_block > 200:
+            # Filter out None values and handle empty list
+            valid_blocks = [b for b in server_data['last_block'].values() if b is not None]
+            max_block = max(valid_blocks, default=0)
+            min_block = min(valid_blocks, default=0)
+
+            if max_block - min_block > (STALE_THRESHOLD * 5):  # Use STALE_THRESHOLD (adjust multiplier as needed)
                 message = "RPC Backend Alert:\n"
                 for k, v in server_data['last_block'].items():
-                    if max_block - v > 100:
+                    if v is not None and max_block - v > (STALE_THRESHOLD * 2):  # Check for None and use STALE_THRESHOLD
                         message += f"Backend {k} is behind in last_block.\n"
                 await send_telegram_notification(message)
 
@@ -337,9 +339,20 @@ async def health_check(request):
         rpc_address = await get_rpc_address(rpc_ip, rpc_port)
         if rpc_address:  # Successfully got an address
             server_data["servers"][key] = rpc_address
-            initial_health_status, _ = await check_rpc_health(rpc_address, key, server_data)
+            initial_health_status, initial_block_number = await check_rpc_health(rpc_address, key, server_data)  # Get initial values
+
+            # --- INITIAL BLOCK DIFFERENCE CHECK (using STALE_THRESHOLD) ---
+            if initial_block_number is not None and server_data.get('last_block'):
+                valid_existing_blocks = [b for b in server_data['last_block'].values() if b is not None]
+                max_existing_block = max(valid_existing_blocks, default=0)
+                if max_existing_block - initial_block_number > STALE_THRESHOLD:
+                    initial_health_status = 503
+                    logger.warning(f"Server {key} added, but marked unhealthy (initial block difference).")
+
             server_data["health_status"][key] = initial_health_status
-            server_data["failure_count"][key] = 0  # Initialize failure count
+            server_data["last_block"][key] = initial_block_number if initial_block_number is not None else 0  # Save initial block
+            server_data["failure_count"][key] = 0 if initial_health_status == 200 else 1  # Initialize based on health
+            server_data["stale_count"][key] = 0
         else:  # Failed to get an address on initial add
             # Use the ip:port as a placeholder
             server_data["servers"][key] = key
@@ -377,3 +390,4 @@ if __name__ == '__main__':
         asyncio.run(main())
     except Exception as e:
         logger.error(f"Error in __main__: {e}")
+
