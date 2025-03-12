@@ -277,7 +277,7 @@ async def update_health_status():
             if server_data.get('last_block'):
                 valid_blocks = [b for b in server_data['last_block'].values() if b is not None]
                 max_block = max(valid_blocks, default=0)
-                if server_data['last_block'].get(key) is not None and (max_block - server_data['last_block'][key] > STALE_THRESHOLD):
+                if server_data['last_block'].get(key) is not None and (max_block - server_data['last_block'][key] > (STALE_THRESHOLD * 5)):
                     health_status = 503
                     server_data['health_status'][key] = health_status  # Update health status
                     logger.warning(f"Server {key} marked unhealthy due to continuous block difference.")
