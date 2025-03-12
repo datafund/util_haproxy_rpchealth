@@ -154,8 +154,6 @@ async def ensure_health_check_task():
         health_check_task = asyncio.create_task(update_health_status())
         logger.info("Health check task started or restarted.")
 
-
-
 async def update_health_status():
     """Periodically checks the health status of all servers."""
     while True:
@@ -275,6 +273,16 @@ async def update_health_status():
                 if key in server_data["failure_count"]:
                     del server_data["failure_count"][key]
 
+            # --- CONTINUOUS BLOCK DIFFERENCE CHECK ---
+            if server_data.get('last_block'):
+                valid_blocks = [b for b in server_data['last_block'].values() if b is not None]
+                max_block = max(valid_blocks, default=0)
+                if server_data['last_block'].get(key) is not None and (max_block - server_data['last_block'][key] > STALE_THRESHOLD):
+                    health_status = 503
+                    server_data['health_status'][key] = health_status  # Update health status
+                    logger.warning(f"Server {key} marked unhealthy due to continuous block difference.")
+            # --- END CONTINUOUS BLOCK DIFFERENCE CHECK ---
+
             await save_server_data(server_data)
 
 
@@ -293,9 +301,6 @@ async def update_health_status():
                 await send_telegram_notification(message)
 
         await asyncio.sleep(HEALTH_CHECK_INTERVAL)
-
-
-
 
 async def send_telegram_notification(message):
     """Sends a notification to Telegram."""
