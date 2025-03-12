@@ -278,7 +278,7 @@ async def update_health_status():
                     max_block = max(valid_blocks)
                     current_server_block = server_data['last_block'].get(key)  # Get current server's block
 
-                    if current_server_block is not None and max_block - current_server_block > STALE_THRESHOLD:
+                    if current_server_block is not None and max_block - current_server_block > (STALE_THRESHOLD * 5):
                         health_status = 503  # Mark as unhealthy
                         health_reason = f"Block difference (behind by {max_block - current_server_block})"
                         server_data['failure_count'][key] = server_data["failure_count"].get(key, 0) + 1  # increment failure
@@ -324,7 +324,7 @@ async def update_health_status():
                     if current_block_diff_large:  # if it is currently large
                         message = "RPC Backend Alert:\n"
                         for k, v in server_data['last_block'].items():
-                            if v is not None and max_block - v > (STALE_THRESHOLD * 2):
+                            if v is not None and max_block - v > (STALE_THRESHOLD * 5):
                                 message += f"Backend {k} is behind in last_block.\n"
                         await send_telegram_notification(message)
         # --- End of block difference check ---
