@@ -11,21 +11,23 @@ logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 SERVER_DATA_FILE = "server_data.json"
 HEALTH_CHECK_INTERVAL = 60
-STALE_THRESHOLD = 3
+STALE_THRESHOLD = 3  # Number of checks before a server is considered stale
 MAX_RETRIES = 3
-RETRY_DELAY = 5
-REMOVE_AFTER_FAILURES = 5
+RETRY_DELAY = 5  # Seconds
+REMOVE_AFTER_FAILURES = 5  # Remove a server after this many consecutive failures
 
 file_write_lock = asyncio.Lock()
 
-health_check_task = None
+health_check_task = None  # Store the health check task
 
 
 class RPCError(Exception):
+    """Custom exception for RPC errors."""
     pass
 
 
 async def get_rpc_address(rpc_ip, rpc_port):
+    """Attempts to connect to the RPC server using http and https."""
     if not (rpc_ip and rpc_port):
         return None
 
@@ -43,6 +45,7 @@ async def get_rpc_address(rpc_ip, rpc_port):
 
 
 async def check_rpc_health(rpc_address, key, server_data):
+    """Checks the health of an RPC server."""
     async with aiohttp.ClientSession() as session:
         try:
             # Health Endpoint Check
@@ -81,8 +84,9 @@ async def check_rpc_health(rpc_address, key, server_data):
                     timeout=30
                 ) as block_response:
                     if block_response.status != 200:
-                         logger.error(f"Block number request to {rpc_address} returned status: {block_response.status}")
-                         return 503, None
+                        logger.error(f"Block number request to {rpc_address} returned status: {block_response.status}")
+                        return 503, None
+
                     try:
                         block_data = await block_response.json()
                     except json.JSONDecodeError:
@@ -103,9 +107,12 @@ async def check_rpc_health(rpc_address, key, server_data):
                     if block_number == 0:
                         logger.error(f"Block number was 0 for {rpc_address}")
                         return 503, None
+
+                    # Check if block number is decreasing
                     if key in server_data['last_block'] and block_number < server_data['last_block'][key]:
                         logger.warning(f"Block number decreased for {rpc_address}")
-                        return 503, None
+                        return 503, None  # Treat decreasing block number as unhealthy
+
                     return 200, block_number
 
             except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
@@ -118,16 +125,18 @@ async def check_rpc_health(rpc_address, key, server_data):
 
 
 async def save_server_data(server_data):
+    """Saves the server data to the JSON file."""
     async with file_write_lock:
         try:
             with open(SERVER_DATA_FILE, 'w') as outfile:
                 json.dump(server_data, outfile, indent=4)
-                outfile.flush()
-                os.fsync(outfile.fileno())
+                outfile.flush()  # Ensure data is written to disk
+                os.fsync(outfile.fileno())  # More robust flushing
         except Exception as e:
             logger.error(f"Error saving server data: {e}")
 
 async def load_server_data():
+    """Loads the server data from the JSON file."""
     try:
         if os.path.isfile(SERVER_DATA_FILE):
             with open(SERVER_DATA_FILE, 'r') as infile:
@@ -139,6 +148,7 @@ async def load_server_data():
 
 
 async def ensure_health_check_task():
+    """Ensures the health check task is running."""
     global health_check_task
     if health_check_task is None or health_check_task.done():
         health_check_task = asyncio.create_task(update_health_status())
@@ -147,18 +157,20 @@ async def ensure_health_check_task():
 
 
 async def update_health_status():
+    """Periodically checks the health status of all servers."""
     while True:
         server_data = await load_server_data()
 
+        # Initialize failure_count if it doesn't exist (for older data files)
         if "failure_count" not in server_data:
             server_data["failure_count"] = {}
 
-        for key in list(server_data['servers'].keys()):
+        for key in list(server_data['servers'].keys()):  # Iterate on a copy to allow deletion
             rpc_address = server_data['servers'].get(key)
-            old_status = server_data['health_status'].get(key, 200)
+            old_status = server_data['health_status'].get(key, 200)  # Default to 200 if not found
 
             # Attempt to get a valid RPC address if the current one is a placeholder
-            if rpc_address == key : # Check if it's a placeholder
+            if rpc_address == key :  # Check if it's a placeholder
                 logger.debug(f"Attempting to resolve placeholder address for {key}")
                 rpc_ip, rpc_port = key.split(":")
                 rpc_address = await get_rpc_address(rpc_ip, rpc_port)
@@ -167,9 +179,9 @@ async def update_health_status():
                     server_data['servers'][key] = rpc_address  # Update with the real address
                     server_data["failure_count"][key] = 0 #reset failure count
                 else:
-                     server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
+                      server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
 
-            if rpc_address is None or rpc_address == key: #still couldn't get rpc address
+            if rpc_address is None or rpc_address == key:  #still couldn't get rpc address
                 logger.warning(f"Skipping health check for {key} due to invalid RPC address.")
                 # Increment failure count and potentially remove
                 server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
@@ -197,40 +209,44 @@ async def update_health_status():
                     if health_status != old_status:
                         message = f"Health status for {rpc_address} changed from {old_status} to {health_status}"
                         logger.info(message)
-                        await send_telegram_notification(message)
+                        await send_telegram_notification(message)  # Send notification on status change
+
 
                     if health_status == 200:
-                        server_data["failure_count"][key] = 0
+                        server_data["failure_count"][key] = 0 #reset failure count
                     else:
                         server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
 
                     if block_number is not None:
                         if key not in server_data['stale_count']:
-                            server_data['stale_count'][key] = 0
+                            server_data['stale_count'][key] = 0  # Initialize if not present
 
+                        # Update last_block and reset stale_count if block number increased
                         if key not in server_data['last_block'] or block_number > server_data['last_block'][key]:
                             server_data['last_block'][key] = block_number
                             server_data['stale_count'][key] = 0
                         else:
-                            server_data['stale_count'][key] += 1
+                            server_data['stale_count'][key] += 1  # Increment stale counter
+                            if server_data['stale_count'][key] >= STALE_THRESHOLD:
+                                health_status = 503 #mark as unhealthy
 
-                        if server_data['stale_count'][key] >= STALE_THRESHOLD:
-                            health_status = 503
-
+                    # If block number is invalid, mark as unhealthy
                     if block_number is None or block_number == 0:
                         logger.info(f"Block number was 0 or None for {rpc_address}")
                         health_status = 503
 
+
                     server_data['health_status'][key] = health_status
 
+                    # Log health status changes
                     if health_status == 503 and old_status == 200:
                         reason = "Stale Block" if server_data['stale_count'][key] >= STALE_THRESHOLD else "Unhealthy Status"
                         logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status} ({reason})")
                     elif health_status == 200 and old_status != 200:
-                         logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status}")
-                         server_data['stale_count'][key] = 0
+                        logger.info(f"Health status for {rpc_address} changed from {old_status} to {health_status}")
+                        server_data['stale_count'][key] = 0 #reset if healthy
 
-                    break
+                    break  # Exit retry loop on success
 
                 except (ConnectionRefusedError, TimeoutError, RPCError, OSError) as e:
                     logger.error(f"Attempt {attempt + 1} failed for {rpc_address}: {e}")
@@ -246,7 +262,7 @@ async def update_health_status():
                     server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
                     health_status = 503
                     server_data['health_status'][key] = health_status
-                    break
+                    break # Exit retry loop for unexpected exceptions
 
             if server_data["failure_count"].get(key, 0) >= REMOVE_AFTER_FAILURES:
                 logger.info(f"Removing server {key} due to persistent failures.")
@@ -263,6 +279,7 @@ async def update_health_status():
             await save_server_data(server_data)
 
 
+        # Check for large block differences
         if server_data.get('last_block'):
             max_block = max(server_data['last_block'].values())
             min_block = min(server_data['last_block'].values())
@@ -279,9 +296,10 @@ async def update_health_status():
 
 
 async def send_telegram_notification(message):
+    """Sends a notification to Telegram."""
     telegram_api_key = os.getenv("TELEGRAM_API_KEY")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    host = os.getenv("HEALTH_HOST", "$HOSTNAME")
+    host = os.getenv("HEALTH_HOST", "$HOSTNAME")  # Default to hostname if not set
 
     if not telegram_api_key or not chat_id:
         logger.error("Telegram API key or chat ID not configured. Skipping notification.")
@@ -307,12 +325,14 @@ async def send_telegram_notification(message):
 
 @routes.get('/health')
 async def health_check(request):
+    """Handles health check requests, reporting UP or DOWN."""
     rpc_ip = request.headers.get("X-Backend-Server", "127.0.0.1")
     rpc_port = request.headers.get("X-Backend-Port", "8545")
     key = f"{rpc_ip}:{rpc_port}"
 
     server_data = await load_server_data()
 
+    # If the server is not in the list, add it.  This handles initial requests.
     if key not in server_data["servers"]:
         rpc_address = await get_rpc_address(rpc_ip, rpc_port)
         if rpc_address:  # Successfully got an address
@@ -327,26 +347,27 @@ async def health_check(request):
             server_data["failure_count"][key] = 1  # Start with a failure count of 1
         await save_server_data(server_data)
 
-    await ensure_health_check_task()
+    await ensure_health_check_task()  # Make sure the background task is running
 
-    if server_data["health_status"].get(key, 503) == 200:
+    if server_data["health_status"].get(key, 503) == 200:  # Default to unhealthy if not found
         return web.Response(text="UP")
     else:
         return web.Response(text="DOWN")
 
 
 async def main():
+    """Starts the web server and the background health check task."""
     try:
         app = web.Application()
         app.add_routes(routes)
-        runner = web.AppRunner(app, access_log=None)
+        runner = web.AppRunner(app, access_log=None)  # Disable access logs for cleaner output
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', 9999)
         await site.start()
         logger.info("Server started on http://0.0.0.0:9999")
 
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(1)  # Keep the main loop running
     except Exception as e:
         logger.error(f"Error in main: {e}")
 
