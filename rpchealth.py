@@ -202,7 +202,7 @@ async def update_health_status():
             # Default new status to unhealthy until proven otherwise
             health_status = 503
             block_number = None
-            health_reason = "Initial check"
+            health_reason = "OK"
 
             # Try to get the health status from the server with retries
             for attempt in range(MAX_RETRIES):
