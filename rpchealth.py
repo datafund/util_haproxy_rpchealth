@@ -278,7 +278,7 @@ async def update_health_status():
                     max_block = max(valid_blocks)
                     current_server_block = server_data['last_block'].get(key)  # Get current server's block
 
-                    if current_server_block is not None and max_block - current_server_block > (STALE_THRESHOLD * 5):
+                    if current_server_block is not None and max_block - current_server_block > 50:
                         health_status = 503  # Mark as unhealthy
                         health_reason = f"Block difference (behind by {max_block - current_server_block})"
                         server_data['failure_count'][key] = server_data["failure_count"].get(key, 0) + 1  # increment failure
