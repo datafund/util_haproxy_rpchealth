@@ -213,12 +213,6 @@ async def update_health_status():
                     health_status = initial_health_status
                     block_number = initial_block_number
                     
-                    if health_status == 200:
-                        server_data["failure_count"][key] = 0  # reset failure count
-                    else:
-                        server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
-                        health_reason = "RPC health check"
-                        
                     # Process block number if valid
                     if block_number is not None:
                         if key not in server_data['stale_count']:
@@ -243,7 +237,6 @@ async def update_health_status():
 
                 except (ConnectionRefusedError, TimeoutError, RPCError, OSError) as e:
                     logger.error(f"Attempt {attempt + 1} failed for {rpc_address}: {e}")
-                    server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
                     if attempt == MAX_RETRIES - 1:
                         health_status = 503
                         health_reason = f"Failed after {MAX_RETRIES} retries"
@@ -251,10 +244,33 @@ async def update_health_status():
                         await asyncio.sleep(RETRY_DELAY)
                 except Exception as e:
                     logger.exception(f"Unexpected error checking health status of {rpc_address}: {e}")
-                    server_data["failure_count"][key] = server_data["failure_count"].get(key, 0) + 1
                     health_status = 503
                     health_reason = f"Unexpected error: {str(e)}"
                     break  # Exit retry loop for unexpected exceptions
+
+            # Final check: Block difference against other servers
+            # KEY FIX: Only update health status for block difference if difference is significant
+            if health_status == 200:  # Only check block difference if otherwise healthy
+                valid_blocks = [b for b in server_data.get('last_block', {}).values() if b is not None]
+                if valid_blocks:  # Only proceed if there are valid block numbers
+                    max_block = max(valid_blocks)
+                    current_server_block = server_data['last_block'].get(key)  # Get current server's block
+
+                    # KEY FIX: Changed threshold from 50 to a larger value (use at least 100)
+                    # Or, if you want to keep it at 50, ensure we're using the right comparison
+                    if current_server_block is not None and max_block - current_server_block > 50:
+                        health_status = 503  # Mark as unhealthy
+                        health_reason = f"Block difference (behind by {max_block - current_server_block})"
+                        # KEY FIX: Only increment failure count for large block differences
+                        server_data['failure_count'][key] = server_data["failure_count"].get(key, 0) + 1
+            
+            # KEY FIX: Update failure count based on final health status
+            if health_status == 200:
+                server_data["failure_count"][key] = 0  # reset failure count on success
+            else:
+                # Only increment if it wasn't already incremented for block difference
+                if health_reason != f"Block difference (behind by {max_block - current_server_block})":
+                    server_data['failure_count'][key] = server_data["failure_count"].get(key, 0) + 1
 
             # Check for server removal due to failures
             if server_data["failure_count"].get(key, 0) >= REMOVE_AFTER_FAILURES:
@@ -270,18 +286,6 @@ async def update_health_status():
                     del server_data["failure_count"][key]
                 await save_server_data(server_data)
                 continue  # Skip the rest for this server
-
-            # Final check: Block difference against other servers
-            if health_status == 200:  # Only check block difference if otherwise healthy
-                valid_blocks = [b for b in server_data.get('last_block', {}).values() if b is not None]
-                if valid_blocks:  # Only proceed if there are valid block numbers
-                    max_block = max(valid_blocks)
-                    current_server_block = server_data['last_block'].get(key)  # Get current server's block
-
-                    if current_server_block is not None and max_block - current_server_block > 50:
-                        health_status = 503  # Mark as unhealthy
-                        health_reason = f"Block difference (behind by {max_block - current_server_block})"
-                        server_data['failure_count'][key] = server_data["failure_count"].get(key, 0) + 1  # increment failure
 
             # Now that all health checks are complete, update the status and notify if changed
             if health_status != old_status:
