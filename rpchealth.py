@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 SERVER_DATA_FILE = "server_data.json"
 HEALTH_CHECK_INTERVAL = 60
-STALE_THRESHOLD = 3  # Number of checks before a server is considered stale
+STALE_THRESHOLD = 5  # Number of checks before a server is considered stale
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # Seconds
 REMOVE_AFTER_FAILURES = 5  # Remove a server after this many consecutive failures
@@ -258,7 +258,7 @@ async def update_health_status():
 
                     # KEY FIX: Changed threshold from 50 to a larger value (use at least 100)
                     # Or, if you want to keep it at 50, ensure we're using the right comparison
-                    if current_server_block is not None and max_block - current_server_block > 50:
+                    if current_server_block is not None and max_block - current_server_block > 100:
                         health_status = 503  # Mark as unhealthy
                         health_reason = f"Block difference (behind by {max_block - current_server_block})"
                         # KEY FIX: Only increment failure count for large block differences
@@ -316,7 +316,7 @@ async def update_health_status():
                 max_block = max(valid_blocks)
                 min_block = min(valid_blocks)
 
-                current_block_diff_large = max_block - min_block > (STALE_THRESHOLD * 5)  # True if large difference
+                current_block_diff_large = max_block - min_block > (STALE_THRESHOLD * 15)  # True if large difference
 
                 # Get the previous large block difference status (default to False if it doesn't exist)
                 previous_block_diff_large = server_data.get('block_diff_large', False)
@@ -328,7 +328,7 @@ async def update_health_status():
                     if current_block_diff_large:  # if it is currently large
                         message = "RPC Backend Alert:\n"
                         for k, v in server_data['last_block'].items():
-                            if v is not None and max_block - v > (STALE_THRESHOLD * 5):
+                            if v is not None and max_block - v > (STALE_THRESHOLD * 10):
                                 message += f"Backend {k} is behind in last_block.\n"
                         await send_telegram_notification(message)
         # --- End of block difference check ---
