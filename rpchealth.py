@@ -202,6 +202,7 @@ async def update_health_status():
             # Default new status to unhealthy until proven otherwise
             health_status = 503
             block_number = None
+            max_block = 0
             health_reason = "OK"
 
             # Try to get the health status from the server with retries
@@ -368,6 +369,17 @@ async def health_check(request):
     """Handles health check requests, reporting UP or DOWN."""
     rpc_ip = request.headers.get("X-Backend-Server", "127.0.0.1")
     rpc_port = request.headers.get("X-Backend-Port", "8545")
+
+    # --- Add check to potentially overwrite based on X-Backend-Server ---
+    backend_server_header = request.headers.get("X-Backend-Server")
+    if backend_server_header and ':' in backend_server_header:
+        parts = backend_server_header.rsplit(':', 1)
+        potential_host = parts[0]
+        potential_port = parts[1]
+
+        if potential_port.isdigit():
+            rpc_ip = potential_host
+            rpc_port = potential_port
     key = f"{rpc_ip}:{rpc_port}"
 
     server_data = await load_server_data()
