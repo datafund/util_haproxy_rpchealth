@@ -4,7 +4,7 @@ import aiohttp
 import json
 import os
 from aiohttp import web
-from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import Counter, Gauge, generate_latest
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -472,7 +472,7 @@ async def metrics(request):
         stale_count = server_data.get('stale_count', {}).get(key, 0)
         BACKEND_STALE_COUNT.labels(backend=key).set(stale_count)
 
-    return web.Response(body=generate_latest(), content_type=CONTENT_TYPE_LATEST)
+    return web.Response(body=generate_latest(), content_type="text/plain; version=0.0.4")
 
 
 async def main():
