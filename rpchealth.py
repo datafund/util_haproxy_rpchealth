@@ -4,6 +4,7 @@ import aiohttp
 import json
 import os
 from aiohttp import web
+from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,6 +16,37 @@ STALE_THRESHOLD = 5  # Number of checks before a server is considered stale
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # Seconds
 REMOVE_AFTER_FAILURES = 5  # Remove a server after this many consecutive failures
+
+# Prometheus metrics
+REQUEST_COUNT = Counter(
+    'rpchealth_api_requests_total',
+    'Total number of API requests',
+    ['endpoint', 'backend', 'result']
+)
+
+BACKEND_HEALTH = Gauge(
+    'rpchealth_backend_health',
+    'Backend health status (1=healthy, 0=unhealthy)',
+    ['backend']
+)
+
+BACKEND_FAILURE_COUNT = Gauge(
+    'rpchealth_backend_failure_count',
+    'Consecutive failure count for backend',
+    ['backend']
+)
+
+BACKEND_BLOCK_NUMBER = Gauge(
+    'rpchealth_backend_block_number',
+    'Latest block number reported by backend',
+    ['backend']
+)
+
+BACKEND_STALE_COUNT = Gauge(
+    'rpchealth_backend_stale_count',
+    'Stale block count for backend',
+    ['backend']
+)
 
 file_write_lock = asyncio.Lock()
 
@@ -413,9 +445,34 @@ async def health_check(request):
     await ensure_health_check_task()  # Make sure the background task is running
 
     if server_data["health_status"].get(key, 503) == 200:  # Default to unhealthy if not found
+        REQUEST_COUNT.labels(endpoint='/health', backend=key, result='UP').inc()
         return web.Response(text="UP")
     else:
+        REQUEST_COUNT.labels(endpoint='/health', backend=key, result='DOWN').inc()
         return web.Response(text="DOWN")
+
+
+@routes.get('/metrics')
+async def metrics(request):
+    """Exposes Prometheus metrics."""
+    server_data = await load_server_data()
+
+    # Update gauges with current state
+    for key in server_data.get('servers', {}).keys():
+        health_status = server_data.get('health_status', {}).get(key, 503)
+        BACKEND_HEALTH.labels(backend=key).set(1 if health_status == 200 else 0)
+
+        failure_count = server_data.get('failure_count', {}).get(key, 0)
+        BACKEND_FAILURE_COUNT.labels(backend=key).set(failure_count)
+
+        block_number = server_data.get('last_block', {}).get(key)
+        if block_number is not None:
+            BACKEND_BLOCK_NUMBER.labels(backend=key).set(block_number)
+
+        stale_count = server_data.get('stale_count', {}).get(key, 0)
+        BACKEND_STALE_COUNT.labels(backend=key).set(stale_count)
+
+    return web.Response(body=generate_latest(), content_type=CONTENT_TYPE_LATEST)
 
 
 async def main():
