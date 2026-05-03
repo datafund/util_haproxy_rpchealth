@@ -83,26 +83,43 @@ async def check_rpc_health(rpc_address, key, server_data):
             # Health Endpoint Check
             try:
                 async with session.get(f"{rpc_address}/health", timeout=30) as response:
-                    if response.status != 200:
-                        logger.error(f"Health check at {rpc_address}/health returned status: {response.status}")
-                        return 503, None
-
+                    body = await response.text()
                     try:
-                        health_data = await response.json()
+                        health_data = json.loads(body) if body else {}
                     except json.JSONDecodeError:
                         logger.error(f"Invalid JSON response from {rpc_address}/health")
                         return 503, None
 
-                    if health_data.get("status") != "Healthy":
-                        logger.warning(f"Server {rpc_address} reported unhealthy status.")
-                        return 503, None
-
                     node_health = health_data.get("entries", {}).get("node-health", {})
-                    is_syncing = node_health.get("data", {}).get("IsSyncing", False)
+                    data = node_health.get("data", {})
+                    is_syncing = data.get("IsSyncing", False)
+                    errors = data.get("Errors", []) or []
 
                     if is_syncing:
                         logger.info(f"Server {rpc_address} is syncing.")
                         return 503, None
+
+                    # /health 200 + Healthy → take the fast path.
+                    if response.status == 200 and health_data.get("status") == "Healthy":
+                        cl_unavailable_tolerated = False
+                    else:
+                        # Tolerate ONLY when the sole reported error is ClUnavailable.
+                        # Nethermind can latch the CL-watchdog in a false-positive state
+                        # even while engine_forkchoiceUpdated keeps arriving every slot.
+                        # We still verify the EL is genuinely advancing below before
+                        # returning 200 — otherwise we fall through to 503.
+                        if errors and all(e == "ClUnavailable" for e in errors):
+                            logger.warning(
+                                f"Server {rpc_address} /health is {response.status} with only ClUnavailable; "
+                                f"will verify EL is still advancing before treating as healthy"
+                            )
+                            cl_unavailable_tolerated = True
+                        else:
+                            logger.error(
+                                f"Health check at {rpc_address}/health returned status: {response.status} "
+                                f"(errors={errors}, status={health_data.get('status')!r})"
+                            )
+                            return 503, None
 
             except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
                 logger.error(f"Error during health endpoint check for {rpc_address}: {e}")
@@ -144,6 +161,22 @@ async def check_rpc_health(rpc_address, key, server_data):
                     if key in server_data['last_block'] and server_data['last_block'][key] is not None and block_number < server_data['last_block'][key]:
                         logger.warning(f"Block number decreased for {rpc_address}")
                         return 503, None  # Treat decreasing block number as unhealthy
+
+                    # If we're tolerating a ClUnavailable /health, require strict block
+                    # progression (block must have advanced since last check). If it hasn't,
+                    # the false-positive assumption is wrong — actual sync stall.
+                    if cl_unavailable_tolerated:
+                        last = server_data['last_block'].get(key)
+                        if last is None or block_number <= last:
+                            logger.warning(
+                                f"Server {rpc_address} reports ClUnavailable AND block has not advanced "
+                                f"({last} -> {block_number}); marking unhealthy"
+                            )
+                            return 503, None
+                        logger.warning(
+                            f"Server {rpc_address} reports ClUnavailable but EL is advancing "
+                            f"({last} -> {block_number}); treating as healthy"
+                        )
 
                     return 200, block_number
 
