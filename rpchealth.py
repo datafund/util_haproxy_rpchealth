@@ -282,28 +282,28 @@ async def update_health_status():
                     break  # Exit retry loop for unexpected exceptions
 
             # Final check: Block difference against other servers
-            # KEY FIX: Only update health status for block difference if difference is significant
+            # Track whether the block-diff branch already incremented failure_count, so the
+            # later branch doesn't double-count. Avoids UnboundLocalError when health_status
+            # was already 503 from the upstream /health probe and the block-diff branch is skipped.
+            block_diff_unhealthy = False
             if health_status == 200:  # Only check block difference if otherwise healthy
                 valid_blocks = [b for b in server_data.get('last_block', {}).values() if b is not None]
                 if valid_blocks:  # Only proceed if there are valid block numbers
                     max_block = max(valid_blocks)
                     current_server_block = server_data['last_block'].get(key)  # Get current server's block
 
-                    # KEY FIX: Changed threshold from 50 to a larger value (use at least 100)
-                    # Or, if you want to keep it at 50, ensure we're using the right comparison
                     if current_server_block is not None and max_block - current_server_block > 100:
                         health_status = 503  # Mark as unhealthy
                         health_reason = f"Block difference (behind by {max_block - current_server_block})"
-                        # KEY FIX: Only increment failure count for large block differences
+                        block_diff_unhealthy = True
                         server_data['failure_count'][key] = server_data["failure_count"].get(key, 0) + 1
-            
-            # KEY FIX: Update failure count based on final health status
+
+            # Update failure count based on final health status
             if health_status == 200:
                 server_data["failure_count"][key] = 0  # reset failure count on success
-            else:
-                # Only increment if it wasn't already incremented for block difference
-                if health_reason != f"Block difference (behind by {max_block - current_server_block})":
-                    server_data['failure_count'][key] = server_data["failure_count"].get(key, 0) + 1
+            elif not block_diff_unhealthy:
+                # Only increment if not already incremented in the block-diff branch above
+                server_data['failure_count'][key] = server_data["failure_count"].get(key, 0) + 1
 
             # Check for server removal due to failures
             if server_data["failure_count"].get(key, 0) >= REMOVE_AFTER_FAILURES:
@@ -362,7 +362,9 @@ async def update_health_status():
                         message = "RPC Backend Alert:\n"
                         for k, v in server_data['last_block'].items():
                             if v is not None and max_block - v > (STALE_THRESHOLD * 10):
-                                message += f"Backend {k} is behind in last_block.\n"
+                                hs = server_data.get('health_status', {}).get(k)
+                                hs_str = 'OK' if hs == 200 else f'/health={hs}' if hs is not None else '/health=?'
+                                message += f"Backend {k} is behind by {max_block - v} blocks (last_block={v}, max={max_block}, {hs_str}).\n"
                         await send_telegram_notification(message)
         # --- End of block difference check ---
 
